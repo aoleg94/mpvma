@@ -1,0 +1,77 @@
+#!/usr/bin/env python
+import json
+import sys,os
+
+AUDIO=map(int, sys.argv[1].split(','))
+FILE=sys.argv[2]
+ARGS=' '.join(sys.argv[3:])
+SOCKET='/tmp/mpvma%i'
+
+for i in xrange(len(AUDIO)+1):
+    try:os.remove(SOCKET%i)
+    except Exception:pass
+    os.mkfifo(SOCKET%i)
+
+MPV_MASTER='mpv -no-audio --input-unix-socket="%s" %s --really-quiet "%s" &'
+MPV_SLAVE='mpv -no-video  --input-unix-socket="%s" %s --really-quiet "%s" &'
+
+#master
+os.system(MPV_MASTER%(
+    SOCKET%0, ARGS, FILE
+))
+#slaves
+for j in xrange(len(AUDIO)):
+    i=j+1
+    os.system(MPV_SLAVE%(
+        SOCKET%i, ARGS, FILE
+    ))
+    
+def bylines(fd):
+    buf=''
+    s = os.read(fd, 32)
+    while s:
+        buf += s
+        while '\n' in buf:
+            a, b = buf.split('\n', 1)
+            yield a
+            buf = b
+        s = os.read(fd, 32)
+    
+try:
+    def op(s,m):
+        print s
+        if m:
+            return os.open(s, os.O_RDWR|(os.O_NONBLOCK if m else 0))
+        else:
+            return open(s, 'r+b')
+    fl=[open(SOCKET%0, 'r+b')]
+    #fl=map(lambda i: op(SOCKET%i, i!=0), [i for i in xrange(len(AUDIO)+1)])
+    #fl=map(lambda i: open(SOCKET%i, 'w+b' if i==0  else 'rb'), [i for i in xrange(len(AUDIO)+1)])
+
+    def sendall(data):
+        print data
+        for j in xrange(len(AUDIO)):
+            try:
+                with open(SOCKET%(j+1), 'r+b') as f:
+                    print >>f, data
+                    print f.readline()
+            except Exception, e: print e
+            #os.write(fl[j+1], data+'\n')
+            #print os.read(fl[j+1], 64)
+
+    #os.write(fl[0], '{ "command": ["observe_property", 1, "playback-time"] }\n')
+    print >>fl[0], '{ "command": ["observe_property", 1, "playback-time"] }\n'
+
+    for line in fl[0]:
+        print line
+        ob=json.loads(line.strip('\n'))
+        if 'event' in ob:
+            if ob['event']=='property-change' and ob['name']=='playback-time':
+                time=ob['data']
+                sendall('{ "command": [ "seek", %s, "absolute"] } '%time)
+            elif ob['event']=='end-file':
+                break
+finally:                
+    sendall('{"command":["quit"]}')
+    print >>fl[0], '{"command":["quit"]}'
+    map(os.close, fl[1:])
